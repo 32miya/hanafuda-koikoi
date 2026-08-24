@@ -30,7 +30,8 @@
   }
   .modal, .modal *{text-shadow:none;}
   #app{
-    position:fixed; inset:0;
+    position:fixed; top:0; left:0; right:0; bottom:0;
+    height:100vh; height:100dvh;
     display:flex; flex-direction:column;
     background:
       radial-gradient(ellipse at 50% 35%, rgba(20,8,45,0.32) 0%, rgba(12,4,32,0.58) 55%, rgba(6,2,18,0.8) 100%),
@@ -409,6 +410,26 @@
   }
   .online-player-name{ font-size:15px; font-weight:bold; margin-bottom:14px; }
   .online-status{ font-size:13px; opacity:0.75; margin-bottom:20px; line-height:1.6; }
+
+  /* ---- compact mode: short viewports (Safari address bar, small iPhones) ---- */
+  @media (max-height:760px){
+    #topbar{padding:4px 8px;}
+    .playerbadge .bigscore{font-size:18px;}
+    .rowlabel{padding:2px 8px; margin:2px 4px; font-size:9px;}
+    .capstack{width:26px; height:40px;}
+    .capstack .catname{top:-12px; font-size:7px;}
+    .capstack .badge{width:13px; height:13px; font-size:7px;}
+    .capstacks{padding:6px 8px 3px; gap:7px;}
+    #fieldZone{grid-template-columns:repeat(4, 62px); grid-auto-rows:97px; gap:6px 7px; padding:5px;}
+    #fieldDeckStack{width:36px; height:56px;}
+    #fieldDeckStack .card.back{width:36px; height:56px;}
+    #yakuBar{padding:3px 10px; font-size:9px;}
+    .handrow{min-height:60px;}
+  }
+  @media (max-height:620px){
+    #fieldZone{grid-template-columns:repeat(4, 54px); grid-auto-rows:85px; gap:5px 6px;}
+    .capstacks{display:none !important;}
+  }
 </style>
 </head>
 <body>
@@ -1786,8 +1807,10 @@ function render(){
     const rowW = playerHandEl.clientWidth;
     const gap = 4;
     const n = sortedHand.length;
+    const appH = document.getElementById('app').clientHeight;
+    const maxW = appH < 620 ? 68 : (appH < 720 ? 80 : 96);
     let cw = (rowW - gap*(n-1)) / n;
-    cw = Math.max(56, Math.min(96, cw));
+    cw = Math.max(52, Math.min(maxW, cw));
     const ch = Math.round(cw*1.575);
     playerHandEl.querySelectorAll('.card').forEach(el=>{
       el.style.width = cw+'px';
@@ -1804,6 +1827,12 @@ const CATS = [['hikari','光'],['tane','タネ'],['tan','短冊'],['kasu','カ�
 
 function renderCapStacks(elId, cards){
   const el = document.getElementById(elId);
+  if(cards.length===0){
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  el.style.display = '';
   el.innerHTML = CATS.map(([type,label])=>{
     const list = cards.filter(c=>c.type===type).sort((a,b)=>a.month-b.month);
     const stackCards = list.map((c,i)=>{
