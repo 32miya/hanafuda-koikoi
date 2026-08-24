@@ -1124,13 +1124,13 @@ function newRound(firstPlayer){
       addScore('player', playerSpecial.pts);
       playFanfare(true);
       netRelayRoundEnd(`相手の配札に「${playerSpecial.name}」！ 勝負をせずに${playerSpecial.pts}点獲得されました`);
-      showMessage(`あなたの配札に「${playerSpecial.name}」！ 勝負をせずに${playerSpecial.pts}点獲得しました`, ()=>startNextRound());
+      showMessage(`あなたの配札に「${playerSpecial.name}」！ 勝負をせずに${playerSpecial.pts}点獲得しました`, ()=>startNextRound('player'));
     } else {
       addScore('cpu', cpuSpecial.pts);
       playFanfare(false);
       const oppWord = onlineMode==='host' ? '相手' : 'CPU';
       netRelayRoundEnd(`あなたの配札に「${cpuSpecial.name}」！ 勝負をせずに${cpuSpecial.pts}点獲得しました`);
-      showMessage(`${oppWord}の配札に「${cpuSpecial.name}」！ 勝負をせずに${cpuSpecial.pts}点獲得されました`, ()=>startNextRound());
+      showMessage(`${oppWord}の配札に「${cpuSpecial.name}」！ 勝負をせずに${cpuSpecial.pts}点獲得されました`, ()=>startNextRound('cpu'));
     }
     return;
   }
@@ -1717,7 +1717,7 @@ function finishRound(who, yaku){
     netRelayRoundEnd(`${guestLabel}のあがり！ ${yaku.map(y=>y.name).join('・')} で ${total}点 獲得${doubled}`);
   }
   showMessage(msg, ()=>{
-    startNextRound();
+    startNextRound(who);
   });
 }
 
@@ -1733,8 +1733,9 @@ function addScore(who, pts){
 }
 
 let roundFirstPlayer = 'player';
-function startNextRound(){
-  roundFirstPlayer = roundFirstPlayer==='player' ? 'cpu' : 'player';
+function startNextRound(winner){
+  // the winner deals next (本手 rule); on a draw the same dealer stays
+  if(winner==='player' || winner==='cpu') roundFirstPlayer = winner;
   newRound(roundFirstPlayer);
 }
 
