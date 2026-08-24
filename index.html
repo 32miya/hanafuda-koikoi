@@ -9,6 +9,10 @@
      with a parent page). No-ops harmlessly when opened directly (e.g. straight GitHub Pages
      access), since there's no parent page to talk to — see fetchPlayerIdentity(). -->
 <script src="https://cdn.gravity.place/fe/sdk/index-1.0.2.min.js"></script>
+<!-- P2P networking for online battles: PeerJS over the free public 0.peerjs.com
+     signaling broker (no game server required). The room "code" is just the
+     host's peer ID. -->
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <style>
   :root{
     --felt:#0f3d2e;
@@ -409,7 +413,20 @@
     font-size:24px; color:var(--gold); object-fit:cover;
   }
   .online-player-name{ font-size:15px; font-weight:bold; margin-bottom:14px; }
-  .online-status{ font-size:13px; opacity:0.75; margin-bottom:20px; line-height:1.6; }
+  .online-status{ font-size:13px; opacity:0.75; margin-bottom:8px; line-height:1.6; }
+  .room-code-box{
+    margin:16px 0; padding:14px; border-radius:12px;
+    background:rgba(0,0,0,0.3); border:1.5px dashed rgba(212,175,55,0.5);
+  }
+  .room-code-label{ font-size:11px; opacity:0.7; margin-bottom:6px; }
+  .room-code{ font-size:32px; font-weight:bold; letter-spacing:0.15em; color:var(--gold); }
+  .room-code-input{
+    width:100%; font-size:24px; text-align:center; letter-spacing:0.2em;
+    padding:12px; border-radius:10px; border:1.5px solid rgba(212,175,55,0.5);
+    background:rgba(255,255,255,0.08); color:var(--cream); text-shadow:none;
+    -webkit-appearance:none;
+  }
+  .room-code-input::placeholder{ color:rgba(255,255,255,0.3); }
 
   /* ---- compact mode: short viewports (Safari address bar, small iPhones) ---- */
   @media (max-height:760px){
@@ -456,8 +473,39 @@
     <div class="online-card">
       <div class="online-icon-slot" id="onlinePlayerIcon">?</div>
       <div class="online-player-name" id="onlinePlayerName">プレイヤー</div>
-      <div class="online-status">オンライン対戦は準備中です</div>
-      <button class="title-btn" id="btnOnlineBack">タイトルへ戻る</button>
+
+      <div id="onlineMenuPanel">
+        <div class="online-status">通信対戦の相手を探します</div>
+        <div class="title-menu" style="margin-top:14px;">
+          <button class="title-btn primary" id="btnCreateRoom">
+            <span class="tbicon">➕</span>
+            <span class="tbtext">部屋を作る<small>相手を招待する</small></span>
+          </button>
+          <button class="title-btn" id="btnShowJoin">
+            <span class="tbicon">🔑</span>
+            <span class="tbtext">部屋に入る<small>合言葉で参加</small></span>
+          </button>
+        </div>
+      </div>
+
+      <div id="onlineHostPanel" style="display:none">
+        <div class="online-status" id="hostStatusText">接続準備中…</div>
+        <div class="room-code-box" id="hostCodeBox" style="display:none">
+          <div class="room-code-label">合言葉</div>
+          <div class="room-code" id="hostCodeText">------</div>
+        </div>
+      </div>
+
+      <div id="onlineJoinPanel" style="display:none">
+        <div class="online-status">相手から聞いた合言葉を入力してください</div>
+        <input type="text" id="joinCodeInput" class="room-code-input" maxlength="6" inputmode="numeric" placeholder="123456">
+        <button class="title-btn primary" id="btnDoJoin" style="margin-top:12px;">
+          <span class="tbicon">🔗</span><span class="tbtext">接続する</span>
+        </button>
+        <div class="online-status" id="joinStatusText" style="margin-top:8px; font-size:12px;"></div>
+      </div>
+
+      <button class="title-btn" id="btnOnlineBack" style="margin-top:18px;">タイトルへ戻る</button>
     </div>
   </div>
 
@@ -1068,15 +1116,21 @@ function newRound(firstPlayer){
     state.roundOver = true;
     render();
     if(playerSpecial && cpuSpecial){
-      showMessage(`引き分け（あなたは${playerSpecial.name}、CPUも${cpuSpecial.name}のため流局です）`, ()=>startNextRound());
+      const oppWord = onlineMode==='host' ? '相手' : 'CPU';
+      const msg = `引き分け（あなたは${playerSpecial.name}、${oppWord}も${cpuSpecial.name}のため流局です）`;
+      netRelayRoundEnd(msg);
+      showMessage(msg, ()=>startNextRound());
     } else if(playerSpecial){
       addScore('player', playerSpecial.pts);
       playFanfare(true);
+      netRelayRoundEnd(`相手の配札に「${playerSpecial.name}」！ 勝負をせずに${playerSpecial.pts}点獲得されました`);
       showMessage(`あなたの配札に「${playerSpecial.name}」！ 勝負をせずに${playerSpecial.pts}点獲得しました`, ()=>startNextRound());
     } else {
       addScore('cpu', cpuSpecial.pts);
       playFanfare(false);
-      showMessage(`CPUの配札に「${cpuSpecial.name}」！ 勝負をせずに${cpuSpecial.pts}点獲得されました`, ()=>startNextRound());
+      const oppWord = onlineMode==='host' ? '相手' : 'CPU';
+      netRelayRoundEnd(`あなたの配札に「${cpuSpecial.name}」！ 勝負をせずに${cpuSpecial.pts}点獲得しました`);
+      showMessage(`${oppWord}の配札に「${cpuSpecial.name}」！ 勝負をせずに${cpuSpecial.pts}点獲得されました`, ()=>startNextRound());
     }
     return;
   }
@@ -1178,7 +1232,7 @@ function resolveCaptureWithChoice(card, who, onDone){
     return;
   }
   // matches.length === 2: must choose one to capture, the other stays on the field
-  if(who==='cpu'){
+  if(who==='cpu' && onlineMode!=='host'){
     const chosen = matches.reduce((a,b)=> PT[b.type]>PT[a.type] ? b : a);
     const idx = state.field.indexOf(chosen);
     state.field.splice(idx,1);
@@ -1199,7 +1253,11 @@ function resolveCaptureWithChoice(card, who, onDone){
     }
   };
   render();
-  setStatus('場に同じ月の札が2枚あります。獲得する札をタップしてください');
+  if(who==='player'){
+    setStatus('場に同じ月の札が2枚あります。獲得する札をタップしてください');
+  } else if(onlineMode==='host'){
+    setStatus('相手が獲得する札を選んでいます…');
+  }
 }
 
 /* fly `card` from sourceRect onto the field (landing on its month-match if there's
@@ -1327,10 +1385,16 @@ function switchTurn(who){
   }
 }
 
+function netRelayRoundEnd(msg){
+  if(onlineMode==='host') netSend({t:'event', kind:'roundEnd', msg});
+}
+
 function endRoundNoScore(){
   state.roundOver = true;
   render();
-  showMessage('役なしで手札が尽きました。引き分けです。', ()=>{
+  const msg = '役なしで手札が尽きました。引き分けです。';
+  netRelayRoundEnd(msg);
+  showMessage(msg, ()=>{
     startNextRound();
   });
 }
@@ -1552,6 +1616,7 @@ function showYakuModal(yaku, handEmpty){
   const {opts, delay, sakura} = yakuCutinOpts(yaku);
   cutin('役成立!', opts);
   if(sakura) spawnSakuraPetals(28);
+  if(onlineMode==='host') netSend({t:'event', kind:'cutin', text:'役成立!', opts, sakura});
   setTimeout(()=>showYakuModalInner(yaku, handEmpty), delay);
 }
 function showYakuModalInner(yaku, handEmpty){
@@ -1571,15 +1636,17 @@ function showYakuModalInner(yaku, handEmpty){
   document.body.appendChild(overlay);
   overlay.querySelector('#btnAgari').onclick = ()=>{
     document.body.removeChild(overlay);
+    if(onlineMode==='guest'){ netSend({t:'action', kind:'koikoiChoice', agari:true}); return; }
     finishRound('player', yaku);
   };
   const kk = overlay.querySelector('#btnKoikoi');
   if(kk){
     kk.onclick = ()=>{
       document.body.removeChild(overlay);
-      state.koikoiCalled.player = true;
       cutin('こいこい!', {sound:'swish'});
       flashToast('こいこい！ さらに役を狙います');
+      if(onlineMode==='guest'){ netSend({t:'action', kind:'koikoiChoice', agari:false}); return; }
+      state.koikoiCalled.player = true;
       switchTurn('player');
     };
   }
@@ -1598,11 +1665,29 @@ function cpuShouldAgari(yaku, handEmpty){
   }
 }
 
+let pendingGuestYakuResolve = null;
 function cpuDecide(yaku, handEmpty){
-  let doAgari = cpuShouldAgari(yaku, handEmpty);
   const {opts, delay, sakura} = yakuCutinOpts(yaku);
   cutin('役成立!', opts);
   if(sakura) spawnSakuraPetals(28);
+
+  if(onlineMode==='host'){
+    // this yaku belongs to the remote human opponent — ask them, don't decide via AI
+    netSend({t:'event', kind:'yakuFormed', yaku, handEmpty, opts, sakura});
+    pendingGuestYakuResolve = (agari)=>{
+      if(handEmpty || agari){
+        flashToast('相手：あがり！');
+        setTimeout(()=>finishRound('cpu', yaku), 500);
+      } else {
+        state.koikoiCalled.cpu = true;
+        flashToast('相手：こいこい！');
+        setTimeout(()=>switchTurn('cpu'), 700);
+      }
+    };
+    return;
+  }
+
+  let doAgari = cpuShouldAgari(yaku, handEmpty);
   setTimeout(()=>{
     if(doAgari){
       flashToast('CPU: あがり！');
@@ -1624,9 +1709,14 @@ function finishRound(who, yaku){
   addScore(who, total);
   render();
   playFanfare(who==='player');
-  const label = who==='player' ? 'あなた' : 'CPU';
+  const label = who==='player' ? 'あなた' : (onlineMode==='host' ? '相手' : 'CPU');
   const doubled = state.koikoiCalled[opponent] ? '（こいこいにより2倍！）' : '';
-  showMessage(`${label}のあがり！ ${yaku.map(y=>y.name).join('・')} で ${total}点 獲得${doubled}`, ()=>{
+  const msg = `${label}のあがり！ ${yaku.map(y=>y.name).join('・')} で ${total}点 獲得${doubled}`;
+  if(onlineMode==='host'){
+    const guestLabel = who==='player' ? '相手' : 'あなた';
+    netRelayRoundEnd(`${guestLabel}のあがり！ ${yaku.map(y=>y.name).join('・')} で ${total}点 獲得${doubled}`);
+  }
+  showMessage(msg, ()=>{
     startNextRound();
   });
 }
@@ -1674,15 +1764,8 @@ function cpuCardScore(card, field, captured){
   return score;
 }
 
-function cpuTurn(){
-  if(state.roundOver) return;
+function playCpuHandCard(idx){
   const hand = state.hand.cpu;
-  let best=null, bestScore=-Infinity;
-  hand.forEach(c=>{
-    const score = cpuCardScore(c, state.field, state.captured.cpu);
-    if(score>bestScore){ bestScore=score; best=c; }
-  });
-  const idx = hand.indexOf(best);
   const cpuHandEls = document.querySelectorAll('#cpuHand .card');
   const fromRect = cpuHandEls[idx] ? cpuHandEls[idx].getBoundingClientRect()
     : (cpuHandEls[0] ? cpuHandEls[0].getBoundingClientRect() : null);
@@ -1702,6 +1785,18 @@ function cpuTurn(){
       }
     },250);
   });
+}
+
+function cpuTurn(){
+  if(state.roundOver) return;
+  if(onlineMode==='host') return; // wait for the guest's own network action instead of AI
+  const hand = state.hand.cpu;
+  let best=null, bestScore=-Infinity;
+  hand.forEach(c=>{
+    const score = cpuCardScore(c, state.field, state.captured.cpu);
+    if(score>bestScore){ bestScore=score; best=c; }
+  });
+  playCpuHandCard(hand.indexOf(best));
 }
 
 /* ========================= 描画 ========================= */
@@ -1738,6 +1833,7 @@ function onHandCardTap(uid){
   if(state.busy || state.turn!=='player' || state.roundOver || state.pendingChoice) return;
   if(selectedUid === uid){
     selectedUid = null;
+    if(onlineMode==='guest'){ playClick(); netSend({t:'action', kind:'playCard', uid}); state.busy = true; render(); return; }
     playerPlay(uid);
   } else {
     selectedUid = uid;
@@ -1787,11 +1883,19 @@ function render(){
   fieldEl.innerHTML = fieldHtml;
   if(pending){
     fieldEl.querySelectorAll('.card.pick').forEach(el=>{
-      el.onclick = ()=> pending.onPick(parseInt(el.dataset.uid));
+      el.onclick = ()=>{
+        const puid = parseInt(el.dataset.uid);
+        if(onlineMode==='guest'){ netSend({t:'action', kind:'pick', uid:puid}); return; }
+        pending.onPick(puid);
+      };
     });
   } else if(selectedCard){
     fieldEl.querySelectorAll('.card').forEach(el=>{
-      el.onclick = ()=>{ const u=selectedUid; selectedUid=null; playerPlay(u); };
+      el.onclick = ()=>{
+        const u=selectedUid; selectedUid=null;
+        if(onlineMode==='guest'){ playClick(); netSend({t:'action', kind:'playCard', uid:u}); state.busy=true; render(); return; }
+        playerPlay(u);
+      };
     });
   }
 
@@ -1821,6 +1925,20 @@ function render(){
   renderCapStacks('playerCap', state.captured.player);
   renderCapStacks('cpuCap', state.captured.cpu);
   renderYakuBar();
+
+  if(onlineMode==='host') netSend({t:'state', state: stateForGuest(state), scores:{player:scores.cpu, cpu:scores.player}});
+}
+
+function stateForGuest(s){
+  return {
+    deck: s.deck, field: s.field,
+    hand: { player: s.hand.cpu, cpu: s.hand.player },
+    captured: { player: s.captured.cpu, cpu: s.captured.player },
+    koikoiCalled: { player: s.koikoiCalled.cpu, cpu: s.koikoiCalled.player },
+    pendingChoice: s.pendingChoice ? { candidates: s.pendingChoice.candidates } : null,
+    turn: s.turn==='player' ? 'cpu' : 'player',
+    roundOver: s.roundOver, busy: s.busy, backIndex: s.backIndex,
+  };
 }
 
 const CATS = [['hikari','光'],['tane','タネ'],['tan','短冊'],['kasu','カス']];
@@ -2042,6 +2160,179 @@ function updateIdentityUI(){
 }
 fetchPlayerIdentity();
 
+/* ================= Online battle: PeerJS P2P =================
+   Host runs the exact same game logic as single-player (with the remote
+   guest simply taking the 'cpu' role's turns instead of the AI). The guest
+   never runs game logic at all — it just displays whatever state the host
+   sends (role-swapped so the guest always sees themselves at the bottom,
+   see stateForGuest()) and forwards taps as network actions. */
+let onlineMode = null; // null | 'host' | 'guest'
+const Net = { peer:null, conn:null, opponentIdentity:{name:null, avatar:null} };
+
+function netSend(obj){
+  if(Net.conn && Net.conn.open) Net.conn.send(obj);
+}
+function generateRoomCode(){
+  return String(Math.floor(100000 + Math.random()*900000));
+}
+function netTeardown(){
+  if(Net.conn){ try{ Net.conn.close(); }catch(e){} }
+  if(Net.peer){ try{ Net.peer.destroy(); }catch(e){} }
+  Net.peer = null; Net.conn = null; Net.opponentIdentity = {name:null, avatar:null};
+  onlineMode = null;
+  pendingGuestYakuResolve = null;
+}
+
+const PEER_ERROR_MESSAGES = {
+  'peer-unavailable': '部屋が見つかりません。合言葉をご確認ください',
+  'network': 'ネットワークエラーが発生しました',
+  'disconnected': '接続が切断されました',
+  'server-error': 'サーバーエラーが発生しました。時間をおいて再度お試しください',
+  'webrtc': '接続に失敗しました（WebRTCエラー）',
+  'browser-incompatible': 'このブラウザには対応していません',
+};
+function peerErrorMessage(err){ return PEER_ERROR_MESSAGES[err.type] || ('接続エラー：'+err.type); }
+
+function netCreateRoom(attempt){
+  attempt = attempt || 0;
+  document.getElementById('hostStatusText').textContent = attempt ? '再試行中…' : '接続準備中…';
+  document.getElementById('hostCodeBox').style.display = 'none';
+  const peer = new Peer(generateRoomCode());
+  Net.peer = peer;
+  peer.on('open', id=>{
+    document.getElementById('hostCodeText').textContent = id;
+    document.getElementById('hostCodeBox').style.display = '';
+    document.getElementById('hostStatusText').textContent = '相手の接続を待っています…';
+  });
+  peer.on('connection', conn=>{
+    if(Net.conn){
+      conn.on('open', ()=>{ conn.send({t:'full'}); setTimeout(()=>conn.close(),300); });
+      return;
+    }
+    Net.conn = conn; onlineMode = 'host';
+    conn.on('open', ()=>{
+      document.getElementById('hostStatusText').textContent = '接続しました！';
+      netSend({t:'identity', name: myIdentity.name, avatar: myIdentity.avatar});
+      setTimeout(()=>startOnlineMatch('host'), 400);
+    });
+    conn.on('data', msg=>netHandleMessage(msg));
+    conn.on('close', ()=>netHandleDisconnect());
+  });
+  peer.on('error', err=>{
+    if(err.type==='unavailable-id' && attempt<5){ netCreateRoom(attempt+1); return; }
+    document.getElementById('hostStatusText').textContent = peerErrorMessage(err);
+  });
+}
+
+function netJoinRoom(code){
+  document.getElementById('joinStatusText').textContent = '接続中…';
+  const peer = new Peer();
+  Net.peer = peer;
+  peer.on('open', ()=>{
+    const conn = peer.connect(code, {reliable:true});
+    Net.conn = conn; onlineMode = 'guest';
+    conn.on('open', ()=>{
+      document.getElementById('joinStatusText').textContent = '接続しました！';
+      netSend({t:'identity', name: myIdentity.name, avatar: myIdentity.avatar});
+      setTimeout(()=>startOnlineMatch('guest'), 400);
+    });
+    conn.on('data', msg=>netHandleMessage(msg));
+    conn.on('close', ()=>netHandleDisconnect());
+  });
+  peer.on('error', err=>{
+    document.getElementById('joinStatusText').textContent = peerErrorMessage(err);
+  });
+}
+
+function netHandleDisconnect(){
+  const wasOnline = !!onlineMode;
+  netTeardown();
+  if(wasOnline){
+    document.getElementById('gameScreen').style.display = 'none';
+    document.getElementById('difficultyScreen').style.display = 'none';
+    document.getElementById('onlineScreen').style.display = '';
+    resetOnlinePanels();
+    showMessage('通信が切断されました。もう一度お試しください。', ()=>{});
+  }
+}
+
+function startOnlineMatch(role){
+  document.getElementById('onlineScreen').style.display = 'none';
+  document.getElementById('gameScreen').style.display = '';
+  const label = Net.opponentIdentity.name || (role==='host' ? 'ゲスト' : 'ホスト');
+  const cpuPnameEl = document.getElementById('cpuPname');
+  if(cpuPnameEl) cpuPnameEl.textContent = label;
+  if(role==='host'){
+    scores = {player:0, cpu:0};
+    addScore('player',0); addScore('cpu',0);
+    roundFirstPlayer = 'player';
+    newRound('player');
+  }
+  // guest just waits — the host's first render() broadcasts the initial deal
+}
+
+function netHandleMessage(msg){
+  if(msg.t==='full'){
+    document.getElementById('joinStatusText').textContent = 'この部屋は満室です';
+    return;
+  }
+  if(msg.t==='identity'){
+    Net.opponentIdentity = {name:msg.name, avatar:msg.avatar};
+    const el = document.getElementById('cpuPname');
+    if(el) el.textContent = msg.name || (onlineMode==='host' ? 'ゲスト' : 'ホスト');
+    return;
+  }
+  if(msg.t==='state'){
+    state = msg.state;
+    if(msg.scores){
+      if(scores.player!==msg.scores.player) addScore('player', msg.scores.player-scores.player);
+      if(scores.cpu!==msg.scores.cpu) addScore('cpu', msg.scores.cpu-scores.cpu);
+    }
+    render();
+    return;
+  }
+  if(msg.t==='event'){
+    guestHandleEvent(msg);
+    return;
+  }
+  if(msg.t==='action' && onlineMode==='host'){
+    hostHandleAction(msg);
+    return;
+  }
+}
+
+function hostHandleAction(msg){
+  if(msg.kind==='playCard'){
+    if(state.turn!=='cpu' || state.busy || state.roundOver || state.pendingChoice) return;
+    const idx = state.hand.cpu.findIndex(c=>c.uid===msg.uid);
+    if(idx<0) return;
+    playCpuHandCard(idx);
+  } else if(msg.kind==='pick'){
+    if(state.pendingChoice) state.pendingChoice.onPick(msg.uid);
+  } else if(msg.kind==='koikoiChoice'){
+    if(pendingGuestYakuResolve){
+      const resolve = pendingGuestYakuResolve;
+      pendingGuestYakuResolve = null;
+      resolve(msg.agari);
+    }
+  }
+}
+
+function guestHandleEvent(msg){
+  if(msg.kind==='yakuFormed'){
+    cutin('役成立!', msg.opts||{sound:'taiko'});
+    if(msg.sakura) spawnSakuraPetals(28);
+    setTimeout(()=>showYakuModalInner(msg.yaku, msg.handEmpty), 550);
+  } else if(msg.kind==='cutin'){
+    cutin(msg.text, msg.opts||{});
+    if(msg.sakura) spawnSakuraPetals(28);
+  } else if(msg.kind==='toast'){
+    flashToast(msg.msg);
+  } else if(msg.kind==='roundEnd'){
+    showMessage(msg.msg, ()=>{});
+  }
+}
+
 /* ---- title screen navigation ---- */
 document.getElementById('btnSinglePlay').onclick = ()=>{
   playClick();
@@ -2067,19 +2358,49 @@ document.querySelectorAll('.diff-btn').forEach(btn=>{
     newRound('player');
   };
 });
+function resetOnlinePanels(){
+  document.getElementById('onlineMenuPanel').style.display = '';
+  document.getElementById('onlineHostPanel').style.display = 'none';
+  document.getElementById('onlineJoinPanel').style.display = 'none';
+  document.getElementById('joinCodeInput').value = '';
+  document.getElementById('joinStatusText').textContent = '';
+}
 document.getElementById('btnOnlinePlay').onclick = ()=>{
   playClick();
   document.getElementById('titleScreen').style.display = 'none';
   document.getElementById('onlineScreen').style.display = '';
+  resetOnlinePanels();
   updateIdentityUI();
 };
 document.getElementById('btnOnlineBack').onclick = ()=>{
   playClick();
+  netTeardown();
   document.getElementById('onlineScreen').style.display = 'none';
   document.getElementById('titleScreen').style.display = '';
 };
+document.getElementById('btnCreateRoom').onclick = ()=>{
+  playClick();
+  document.getElementById('onlineMenuPanel').style.display = 'none';
+  document.getElementById('onlineHostPanel').style.display = '';
+  netCreateRoom();
+};
+document.getElementById('btnShowJoin').onclick = ()=>{
+  playClick();
+  document.getElementById('onlineMenuPanel').style.display = 'none';
+  document.getElementById('onlineJoinPanel').style.display = '';
+};
+document.getElementById('btnDoJoin').onclick = ()=>{
+  playClick();
+  const code = document.getElementById('joinCodeInput').value.trim();
+  if(!/^\d{6}$/.test(code)){
+    document.getElementById('joinStatusText').textContent = '6桁の合言葉を入力してください';
+    return;
+  }
+  netJoinRoom(code);
+};
 document.getElementById('titleBackBtn').onclick = ()=>{
   playClick();
+  netTeardown();
   document.getElementById('gameScreen').style.display = 'none';
   document.getElementById('titleScreen').style.display = '';
 };
