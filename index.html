@@ -1231,10 +1231,48 @@ function flyCard(innerHtml, extraCls, fromRect, toRect, opts){
       el.style.transition += ', transform .12s ease';
       el.style.transform = `rotate(${stackRotate}deg) scale(1.08)`;
       setTimeout(()=>{
-        el.remove();
-        resolve();
+        if(opts.keepEl){
+          // leave the card parked on the field (still stacked/tilted) instead of
+          // discarding it, so a later batched flight can pick it up from here
+          el.style.transform = `rotate(${stackRotate}deg)`;
+          resolve(el);
+        } else {
+          el.remove();
+          resolve();
+        }
       }, opts.stackOffset ? 260 : 120);
     }, 340);
+  });
+}
+
+/* continue-flying a card element that's already on screen (e.g. one parked
+   by flyCard's opts.keepEl) from its current position to a new rect. */
+function flyElementTo(el, toRect, opts){
+  opts = opts || {};
+  return new Promise(resolve=>{
+    if(!el){ resolve(); return; }
+    if(!toRect){ el.remove(); resolve(); return; }
+    const fromRect = el.getBoundingClientRect();
+    const destW = opts.destWidth || toRect.width || fromRect.width;
+    const destH = opts.destHeight || toRect.height || fromRect.height;
+    el.style.transition = 'none';
+    el.style.left = fromRect.left+'px';
+    el.style.top = fromRect.top+'px';
+    el.style.width = fromRect.width+'px';
+    el.style.height = fromRect.height+'px';
+    void el.offsetWidth;
+    requestAnimationFrame(()=>{
+      el.style.transition = 'left .3s cubic-bezier(.3,.6,.3,1), top .3s cubic-bezier(.3,.6,.3,1), width .3s ease, height .3s ease, transform .3s ease';
+      el.style.left = (toRect.left + toRect.width/2 - destW/2) + 'px';
+      el.style.top = (toRect.top + toRect.height/2 - destH/2) + 'px';
+      el.style.width = destW+'px';
+      el.style.height = destH+'px';
+      el.style.transform = 'rotate(0deg)';
+    });
+    setTimeout(()=>{
+      el.remove();
+      resolve();
+    }, 300);
   });
 }
 
@@ -1287,8 +1325,10 @@ function resolveCaptureWithChoice(card, who, onDone){
 }
 
 /* fly `card` from sourceRect onto the field (landing on its month-match if there's
-   exactly one, otherwise onto the field area), then resolve the real capture logic. */
-function playFieldEntry(card, who, sourceRect, cb){
+   exactly one, otherwise onto the field area), then resolve the real capture logic.
+   When `pending` (an array) is passed, a capture is parked stacked on the field
+   instead of immediately flying to the captured pile — see flyPendingCaptures. */
+function playFieldEntry(card, who, sourceRect, cb, pending){
   const matches = state.field.filter(c=>c.month===card.month);
   const targetEl = matches.length===1
     ? document.querySelector(`#fieldZone .card[data-uid="${matches[0].uid}"]`)
@@ -1303,7 +1343,8 @@ function playFieldEntry(card, who, sourceRect, cb){
     const cardW = 72, cardH = 113;
     toRect = { left: fz.left+fz.width/2-cardW/2, top: fz.top+fz.height/2-cardH/2, width:cardW, height:cardH };
   }
-  const finish = ()=> animateAndResolve(card, who, cb, toRect);
+  const willCapture = matches.length>0;
+  const finish = (landedEl)=> animateAndResolve(card, who, cb, toRect, pending, landedEl);
   if(sourceRect){
     // keep the clone at destination size throughout (position-only flight) so the
     // artwork never gets stretched/clipped mid-transition
@@ -1312,7 +1353,7 @@ function playFieldEntry(card, who, sourceRect, cb){
       top: sourceRect.top + sourceRect.height/2 - toRect.height/2,
       width: toRect.width, height: toRect.height
     };
-    flyCard(cardInnerHTML(card), null, fromNorm, toRect, { onArrive: playThwack, stackOffset: !!targetEl }).then(finish);
+    flyCard(cardInnerHTML(card), null, fromNorm, toRect, { onArrive: playThwack, stackOffset: !!targetEl, keepEl: !!(pending && willCapture) }).then(finish);
   } else {
     finish();
   }
@@ -1328,6 +1369,7 @@ function playerPlay(uid){
   const card = state.hand.player.splice(idx,1)[0];
   state.busy = true;
   render();
+  const pending = [];
   playFieldEntry(card, 'player', fromRect, ()=>{
     const drawn = state.deck.pop();
     if(drawn) playDrawSlide();
@@ -1335,24 +1377,31 @@ function playerPlay(uid){
       if(drawn){
         const deckEl = document.getElementById('fieldDeckStack');
         const deckRect = deckEl ? deckEl.getBoundingClientRect() : null;
-        playFieldEntry(drawn, 'player', deckRect, ()=>afterTurnCheck('player'));
+        playFieldEntry(drawn, 'player', deckRect, ()=>flyPendingCaptures('player', pending, ()=>afterTurnCheck('player')), pending);
       } else {
-        afterTurnCheck('player');
+        flyPendingCaptures('player', pending, ()=>afterTurnCheck('player'));
       }
     },250);
-  });
+  }, pending);
 }
 
 /* after a card has landed on the field, resolve whether it captures anything;
    if it does, fly the captured cards from the field into the capturing
    player's captured-stack area before re-rendering. */
-function animateAndResolve(card, who, cb, landedRect){
+function animateAndResolve(card, who, cb, landedRect, pending, landedEl){
   const fieldRects = {};
   document.querySelectorAll('#fieldZone .card[data-uid]').forEach(el=>{
     fieldRects[el.dataset.uid] = el.getBoundingClientRect();
   });
   resolveCaptureWithChoice(card, who, (caps)=>{
     if(caps.length){
+      if(pending){
+        // don't fly to the captured pile yet — leave the pair stacked on the
+        // field and let flyPendingCaptures move everything together later
+        pending.push({ card, caps, fieldRects, landedRect, landedEl });
+        if(cb) setTimeout(cb, 150);
+        return;
+      }
       const stackEl = document.getElementById(who==='player' ? 'playerCap' : 'cpuCap');
       const stackRect = stackEl ? stackEl.getBoundingClientRect() : null;
       const flights = [card, ...caps].map(c=>
@@ -1366,9 +1415,32 @@ function animateAndResolve(card, who, cb, landedRect){
         if(cb) setTimeout(cb, 200);
       });
     } else {
+      if(landedEl) landedEl.remove();
       render();
       if(cb) setTimeout(cb, 150);
     }
+  });
+}
+
+/* fly every capture parked during this turn (by hand-card play and/or the
+   drawn card) to the captured pile together, in one combined animation. */
+function flyPendingCaptures(who, pending, cb){
+  if(!pending.length){ if(cb) cb(); return; }
+  const stackEl = document.getElementById(who==='player' ? 'playerCap' : 'cpuCap');
+  const stackRect = stackEl ? stackEl.getBoundingClientRect() : null;
+  const flights = [];
+  pending.forEach(entry=>{
+    flights.push(flyElementTo(entry.landedEl, stackRect, { destWidth:34, destHeight:53 }));
+    entry.caps.forEach(c=>{
+      flights.push(flyCard(cardInnerHTML(c), 'mini', entry.fieldRects[c.uid] || entry.landedRect, stackRect, {
+        destWidth:34, destHeight:53
+      }));
+    });
+  });
+  Promise.all(flights).then(()=>{
+    playCardWhoosh();
+    render();
+    if(cb) setTimeout(cb, 200);
   });
 }
 
@@ -1845,6 +1917,7 @@ function playCpuHandCard(idx){
   const card = hand.splice(idx,1)[0];
   state.busy = true;
   render();
+  const pending = [];
   playFieldEntry(card, 'cpu', fromRect, ()=>{
     const drawn = state.deck.pop();
     if(drawn) playDrawSlide();
@@ -1852,12 +1925,12 @@ function playCpuHandCard(idx){
       if(drawn){
         const deckEl = document.getElementById('fieldDeckStack');
         const deckRect = deckEl ? deckEl.getBoundingClientRect() : null;
-        playFieldEntry(drawn, 'cpu', deckRect, ()=>afterTurnCheck('cpu'));
+        playFieldEntry(drawn, 'cpu', deckRect, ()=>flyPendingCaptures('cpu', pending, ()=>afterTurnCheck('cpu')), pending);
       } else {
-        afterTurnCheck('cpu');
+        flyPendingCaptures('cpu', pending, ()=>afterTurnCheck('cpu'));
       }
     },250);
-  });
+  }, pending);
 }
 
 function cpuTurn(){
