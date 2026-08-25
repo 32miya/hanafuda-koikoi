@@ -1212,22 +1212,28 @@ function flyCard(innerHtml, extraCls, fromRect, toRect, opts){
     void el.offsetWidth;
     const destW = opts.destWidth || toRect.width || fromRect.width;
     const destH = opts.destHeight || toRect.height || fromRect.height;
+    // when landing on a matched field card, offset+tilt the card a little so it visibly
+    // stacks on top of the card underneath instead of perfectly covering it
+    const stackDX = opts.stackOffset ? 7 : 0;
+    const stackDY = opts.stackOffset ? 9 : 0;
+    const stackRotate = opts.stackOffset ? (Math.random()<0.5?-1:1)*(5+Math.random()*4) : 0;
     requestAnimationFrame(()=>{
-      el.style.transition = 'left .34s cubic-bezier(.22,.65,.3,1), top .34s cubic-bezier(.22,.65,.3,1), width .34s ease, height .34s ease';
-      el.style.left = (toRect.left + toRect.width/2 - destW/2) + 'px';
-      el.style.top = (toRect.top + toRect.height/2 - destH/2) + 'px';
+      el.style.transition = 'left .34s cubic-bezier(.22,.65,.3,1), top .34s cubic-bezier(.22,.65,.3,1), width .34s ease, height .34s ease, transform .34s cubic-bezier(.22,.65,.3,1)';
+      el.style.left = (toRect.left + toRect.width/2 - destW/2 + stackDX) + 'px';
+      el.style.top = (toRect.top + toRect.height/2 - destH/2 + stackDY) + 'px';
       el.style.width = destW+'px';
       el.style.height = destH+'px';
+      if(opts.stackOffset){ el.style.transform = `rotate(${stackRotate}deg)`; }
     });
     setTimeout(()=>{
       if(opts.onArrive) opts.onArrive();
       if(opts.swapHtml) el.innerHTML = opts.swapHtml;
       el.style.transition += ', transform .12s ease';
-      el.style.transform = 'scale(1.08)';
+      el.style.transform = `rotate(${stackRotate}deg) scale(1.08)`;
       setTimeout(()=>{
         el.remove();
         resolve();
-      }, 120);
+      }, opts.stackOffset ? 260 : 120);
     }, 340);
   });
 }
@@ -1306,7 +1312,7 @@ function playFieldEntry(card, who, sourceRect, cb){
       top: sourceRect.top + sourceRect.height/2 - toRect.height/2,
       width: toRect.width, height: toRect.height
     };
-    flyCard(cardInnerHTML(card), null, fromNorm, toRect, { onArrive: playThwack }).then(finish);
+    flyCard(cardInnerHTML(card), null, fromNorm, toRect, { onArrive: playThwack, stackOffset: !!targetEl }).then(finish);
   } else {
     finish();
   }
