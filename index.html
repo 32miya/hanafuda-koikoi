@@ -110,10 +110,10 @@
     border-bottom:1px solid rgba(255,255,255,0.08);
   }
   #fieldDeckStack{
-    position:relative; flex:0 0 auto; width:42px; height:66px;
+    position:relative; flex:0 0 auto; width:58px; height:92px;
   }
   #fieldDeckStack:empty{display:none;}
-  #fieldDeckStack .card.back{position:absolute; width:42px; height:66px; left:0; top:0;}
+  #fieldDeckStack .card.back{position:absolute; width:58px; height:92px; left:0; top:0;}
   #fieldDeckStack .stk2{left:2px; top:-2px; z-index:-1;}
   #fieldDeckStack .stk3{left:4px; top:-4px; z-index:-2;}
   #fieldDeckStack .fdbadge{
@@ -397,6 +397,7 @@
     font-size:5vw; letter-spacing:0.5em; margin-top:6px; margin-left:0.5em;
     color:var(--cream); opacity:0.85;
   }
+  #titleLogoSub{ color:var(--gold); opacity:1; text-shadow:0 2px 6px rgba(0,0,0,0.7); }
   .title-menu{ display:flex; flex-direction:column; gap:14px; width:100%; max-width:320px; }
   .title-btn{
     display:flex; align-items:center; gap:14px; width:100%;
@@ -454,8 +455,6 @@
     .capstack .badge{width:13px; height:13px; font-size:7px;}
     .capstacks{padding:6px 8px 3px; gap:7px;}
     #fieldZone{grid-template-columns:repeat(4, 62px); grid-auto-rows:97px; gap:6px 7px; padding:5px;}
-    #fieldDeckStack{width:36px; height:56px;}
-    #fieldDeckStack .card.back{width:36px; height:56px;}
     #yakuBar{padding:3px 10px; font-size:9px;}
     .handrow{min-height:60px;}
   }
@@ -470,7 +469,7 @@
   <div id="titleScreen" class="screen-overlay">
     <div class="title-logo">
       <div class="title-kanji">花札</div>
-      <div class="title-sub">こいこい</div>
+      <div class="title-sub" id="titleLogoSub">こいこい</div>
     </div>
     <div class="title-menu">
       <button class="title-btn primary" id="btnSinglePlay">
@@ -479,7 +478,7 @@
       </button>
       <button class="title-btn" id="btnOnlinePlay">
         <span class="tbicon">🌐</span>
-        <span class="tbtext">オンライン対戦<small>近日公開</small></span>
+        <span class="tbtext">オンライン対戦</span>
       </button>
     </div>
     <div class="title-footer">ルールはゲーム内の「?ルール」からいつでも確認できます</div>
@@ -1231,10 +1230,36 @@ function flyCard(innerHtml, extraCls, fromRect, toRect, opts){
       el.style.transition += ', transform .12s ease';
       el.style.transform = `rotate(${stackRotate}deg) scale(1.08)`;
       setTimeout(()=>{
-        el.remove();
-        resolve();
+        if(opts.keepEl){
+          // settle back down from the arrival bump and leave the card sitting
+          // in place (still stacked on its match) for the caller to reuse later
+          el.style.transform = `rotate(${stackRotate}deg)`;
+          resolve(el);
+        } else {
+          el.remove();
+          resolve();
+        }
       }, opts.stackOffset ? 260 : 120);
     }, 340);
+  });
+}
+
+/* slide an already-landed (kept) clone over to sit stacked on `toRect` — used
+   when a same-month tie is resolved and the played card needs to move from its
+   provisional middle-of-field landing spot onto the field card the player picked. */
+function restackClone(el, toRect){
+  return new Promise(resolve=>{
+    const rect = el.getBoundingClientRect();
+    const destW = rect.width, destH = rect.height;
+    const stackDX = 7, stackDY = 9;
+    const stackRotate = (Math.random()<0.5?-1:1)*(5+Math.random()*4);
+    el.style.transition = 'left .28s cubic-bezier(.22,.65,.3,1), top .28s cubic-bezier(.22,.65,.3,1), transform .28s cubic-bezier(.22,.65,.3,1)';
+    requestAnimationFrame(()=>{
+      el.style.left = (toRect.left + toRect.width/2 - destW/2 + stackDX) + 'px';
+      el.style.top = (toRect.top + toRect.height/2 - destH/2 + stackDY) + 'px';
+      el.style.transform = `rotate(${stackRotate}deg)`;
+    });
+    setTimeout(resolve, 300);
   });
 }
 
@@ -1286,8 +1311,34 @@ function resolveCaptureWithChoice(card, who, onDone){
   }
 }
 
+/* where `card` will land in the sorted field row if it doesn't match anything —
+   mirrors render()'s `[...state.field, card].sort((a,b)=>a.month-b.month)` so the
+   flight target is exactly the grid slot it's about to settle into. Reads the
+   rect off the already-rendered card/fieldslot currently sitting at that slot
+   index, so it stays correct across every viewport/breakpoint. Returns null if
+   the field has grown past its currently-rendered slot count (rare). */
+function predictFieldSlotRect(card){
+  const withNew = [...state.field, card].sort((a,b)=>a.month-b.month);
+  const idx = withNew.findIndex(c=>c.uid===card.uid);
+  const slotEl = document.querySelectorAll('#fieldZone > *')[idx];
+  return slotEl ? slotEl.getBoundingClientRect() : null;
+}
+
+function fieldCenterRect(){
+  // land at a normal card size (matching the actual rendered .card size) in
+  // the middle of the field, not the whole grid box
+  const fz = document.getElementById('fieldZone').getBoundingClientRect();
+  const cardW = 58, cardH = 92;
+  return { left: fz.left+fz.width/2-cardW/2, top: fz.top+fz.height/2-cardH/2, width:cardW, height:cardH };
+}
+
 /* fly `card` from sourceRect onto the field (landing on its month-match if there's
-   exactly one, otherwise onto the field area), then resolve the real capture logic. */
+   exactly one, otherwise onto the field area) and resolve the real capture logic —
+   but don't touch the DOM's field/captured display yet. The card's clone is left
+   sitting on the field (stacked on its match, if any) and `cb` is handed a bundle
+   describing what happened, so the caller can batch it with the other card played
+   this turn (hand card + drawn card land together, see finishTurn) before anything
+   actually leaves the field for the captured pile. */
 function playFieldEntry(card, who, sourceRect, cb){
   const matches = state.field.filter(c=>c.month===card.month);
   const targetEl = matches.length===1
@@ -1296,14 +1347,36 @@ function playFieldEntry(card, who, sourceRect, cb){
   let toRect;
   if(targetEl){
     toRect = targetEl.getBoundingClientRect();
+  } else if(matches.length===0){
+    // no match at all: it's just taking its place in the field row, so land
+    // straight on that slot instead of the middle of the field
+    toRect = predictFieldSlotRect(card) || fieldCenterRect();
   } else {
-    // no single-card target (empty field, or 2/3-way match to be resolved later):
-    // land at a normal card size in the middle of the field, not the whole grid box
-    const fz = document.getElementById('fieldZone').getBoundingClientRect();
-    const cardW = 72, cardH = 113;
-    toRect = { left: fz.left+fz.width/2-cardW/2, top: fz.top+fz.height/2-cardH/2, width:cardW, height:cardH };
+    // 2/3-way match still to be resolved: land in the middle of the field
+    // until we know whether/where it's actually staying
+    toRect = fieldCenterRect();
   }
-  const finish = ()=> animateAndResolve(card, who, cb, toRect);
+  const land = (clone)=>{
+    const fieldRects = {};
+    document.querySelectorAll('#fieldZone .card[data-uid]').forEach(el=>{
+      fieldRects[el.dataset.uid] = el.getBoundingClientRect();
+    });
+    resolveCaptureWithChoice(card, who, (caps)=>{
+      // a same-month tie (2 field candidates) has no single target to land on
+      // up front, so the card lands in the middle of the field while the
+      // player picks; once picked, slide it over to stack on the chosen card
+      if(!targetEl && caps.length===1 && clone){
+        const chosenEl = document.querySelector(`#fieldZone .card[data-uid="${caps[0].uid}"]`);
+        if(chosenEl){
+          restackClone(clone, chosenEl.getBoundingClientRect()).then(()=>{
+            cb({ card, caps, clone, fieldRects, landedRect: toRect });
+          });
+          return;
+        }
+      }
+      cb({ card, caps, clone, fieldRects, landedRect: toRect });
+    });
+  };
   if(sourceRect){
     // keep the clone at destination size throughout (position-only flight) so the
     // artwork never gets stretched/clipped mid-transition
@@ -1312,9 +1385,9 @@ function playFieldEntry(card, who, sourceRect, cb){
       top: sourceRect.top + sourceRect.height/2 - toRect.height/2,
       width: toRect.width, height: toRect.height
     };
-    flyCard(cardInnerHTML(card), null, fromNorm, toRect, { onArrive: playThwack, stackOffset: !!targetEl }).then(finish);
+    flyCard(cardInnerHTML(card), null, fromNorm, toRect, { onArrive: playThwack, stackOffset: !!targetEl, keepEl:true }).then(land);
   } else {
-    finish();
+    land(null);
   }
 }
 
@@ -1328,47 +1401,53 @@ function playerPlay(uid){
   const card = state.hand.player.splice(idx,1)[0];
   state.busy = true;
   render();
-  playFieldEntry(card, 'player', fromRect, ()=>{
+  playFieldEntry(card, 'player', fromRect, (pending1)=>{
     const drawn = state.deck.pop();
     if(drawn) playDrawSlide();
     setTimeout(()=>{
       if(drawn){
         const deckEl = document.getElementById('fieldDeckStack');
         const deckRect = deckEl ? deckEl.getBoundingClientRect() : null;
-        playFieldEntry(drawn, 'player', deckRect, ()=>afterTurnCheck('player'));
+        playFieldEntry(drawn, 'player', deckRect, (pending2)=>{
+          finishTurn('player', [pending1, pending2]);
+        });
       } else {
-        afterTurnCheck('player');
+        finishTurn('player', [pending1]);
       }
     },250);
   });
 }
 
-/* after a card has landed on the field, resolve whether it captures anything;
-   if it does, fly the captured cards from the field into the capturing
-   player's captured-stack area before re-rendering. */
-function animateAndResolve(card, who, cb, landedRect){
-  const fieldRects = {};
-  document.querySelectorAll('#fieldZone .card[data-uid]').forEach(el=>{
-    fieldRects[el.dataset.uid] = el.getBoundingClientRect();
+/* both cards of the turn (hand card + drawn card) have now landed on the field
+   and had their captures resolved, each still shown by its own clone sitting on
+   the field (stacked on its match, if any). Fly everything captured — the played
+   cards and the field cards they matched — into the captured pile together in one
+   go; a card that captured nothing just settles onto the field via the final
+   render(). */
+function finishTurn(who, pendings){
+  const items = pendings.filter(Boolean);
+  const capturing = items.filter(p=>p.caps.length>0);
+  const settle = ()=>{
+    items.forEach(p=>{ if(p.clone) p.clone.remove(); });
+    render();
+    setTimeout(()=>afterTurnCheck(who), capturing.length ? 200 : 150);
+  };
+  if(capturing.length===0){ settle(); return; }
+  const stackEl = document.getElementById(who==='player' ? 'playerCap' : 'cpuCap');
+  const stackRect = stackEl ? stackEl.getBoundingClientRect() : null;
+  const flights = [];
+  capturing.forEach(p=>{
+    const cardFrom = p.clone ? p.clone.getBoundingClientRect() : p.landedRect;
+    flights.push(flyCard(cardInnerHTML(p.card), 'mini', cardFrom, stackRect, { destWidth:34, destHeight:53 }));
+    p.caps.forEach(c=>{
+      flights.push(flyCard(cardInnerHTML(c), 'mini', p.fieldRects[c.uid] || p.landedRect, stackRect, {
+        destWidth:34, destHeight:53
+      }));
+    });
   });
-  resolveCaptureWithChoice(card, who, (caps)=>{
-    if(caps.length){
-      const stackEl = document.getElementById(who==='player' ? 'playerCap' : 'cpuCap');
-      const stackRect = stackEl ? stackEl.getBoundingClientRect() : null;
-      const flights = [card, ...caps].map(c=>
-        flyCard(cardInnerHTML(c), 'mini', fieldRects[c.uid] || landedRect, stackRect, {
-          destWidth:34, destHeight:53
-        })
-      );
-      Promise.all(flights).then(()=>{
-        playCardWhoosh();
-        render();
-        if(cb) setTimeout(cb, 200);
-      });
-    } else {
-      render();
-      if(cb) setTimeout(cb, 150);
-    }
+  Promise.all(flights).then(()=>{
+    playCardWhoosh();
+    settle();
   });
 }
 
@@ -1377,7 +1456,6 @@ function afterTurnCheck(who){
   const yaku = computeYaku(state.captured[who]);
   const sig = yakuSignature(yaku);
   const handEmpty = state.hand[who].length===0;
-  const deckEmpty = state.deck.length===0 && state.field.length>=0;
 
   if(yaku.length>0 && sig!==prevSig){
     state[`_sig_${who}`] = sig;
@@ -1390,7 +1468,12 @@ function afterTurnCheck(who){
   }
   state[`_sig_${who}`] = sig;
 
-  if(handEmpty){
+  // both players always start a round with the same hand size, so whoever
+  // empties their hand first just hands the turn back to the other player,
+  // who keeps playing their remaining cards alone; the round only actually
+  // ends (no-yaku draw) once BOTH hands are exhausted, not just this one
+  const opponent = who==='player' ? 'cpu' : 'player';
+  if(handEmpty && state.hand[opponent].length===0){
     endRoundNoScore();
     return;
   }
@@ -1845,16 +1928,18 @@ function playCpuHandCard(idx){
   const card = hand.splice(idx,1)[0];
   state.busy = true;
   render();
-  playFieldEntry(card, 'cpu', fromRect, ()=>{
+  playFieldEntry(card, 'cpu', fromRect, (pending1)=>{
     const drawn = state.deck.pop();
     if(drawn) playDrawSlide();
     setTimeout(()=>{
       if(drawn){
         const deckEl = document.getElementById('fieldDeckStack');
         const deckRect = deckEl ? deckEl.getBoundingClientRect() : null;
-        playFieldEntry(drawn, 'cpu', deckRect, ()=>afterTurnCheck('cpu'));
+        playFieldEntry(drawn, 'cpu', deckRect, (pending2)=>{
+          finishTurn('cpu', [pending1, pending2]);
+        });
       } else {
-        afterTurnCheck('cpu');
+        finishTurn('cpu', [pending1]);
       }
     },250);
   });
