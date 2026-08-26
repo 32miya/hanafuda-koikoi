@@ -1275,7 +1275,7 @@ function restackClone(el, toRect){
 /* capture: remove matching field cards, add card+matches to captured pile.
    0 or 1 or 3 matches resolve immediately; 2 matches require choosing which one to take
    (the true koi-koi rule), so this is async via onDone callback. */
-function resolveCaptureWithChoice(card, who, onDone, autoPick){
+function resolveCaptureWithChoice(card, who, onDone){
   const matches = state.field.filter(c=>c.month===card.month);
   if(matches.length===0){
     state.field.push(card);
@@ -1291,12 +1291,14 @@ function resolveCaptureWithChoice(card, who, onDone, autoPick){
     onDone(matches);
     return;
   }
-  // matches.length === 2: must choose one to capture, the other stays on the field.
-  // CPU always auto-picks; a human player's hand card still gets the real
-  // choice, but `autoPick` (the drawn card, see playFieldEntry) skips it too —
-  // otherwise a turn where both the hand card and the card drawn afterward
-  // each hit their own tie would ask the player to choose twice in a row.
-  if(autoPick || (who==='cpu' && onlineMode!=='host')){
+  // matches.length === 2: must choose one to capture, the other stays on the
+  // field — true for the hand card and, independently, for the card drawn
+  // from the deck afterward too, even if that means the player is asked
+  // twice in one turn. If the hand card's own tie already claimed one of a
+  // field pair, only 1 card of that month is left by the time the drawn
+  // card is checked, so this branch naturally isn't reached for it — no
+  // special-casing needed for that case.
+  if(who==='cpu' && onlineMode!=='host'){
     const chosen = matches.reduce((a,b)=> PT[b.type]>PT[a.type] ? b : a);
     const idx = state.field.indexOf(chosen);
     state.field.splice(idx,1);
@@ -1405,7 +1407,7 @@ function matchCandidatesRect(matches){
    describing what happened, so the caller can batch it with the other card played
    this turn (hand card + drawn card land together, see finishTurn) before anything
    actually leaves the field for the captured pile. */
-function playFieldEntry(card, who, sourceRect, cb, slotOffset, autoPick){
+function playFieldEntry(card, who, sourceRect, cb, slotOffset){
   const matches = state.field.filter(c=>c.month===card.month);
   const targetEl = matches.length===1
     ? document.querySelector(`#fieldZone .card[data-uid="${matches[0].uid}"]`)
@@ -1429,9 +1431,8 @@ function playFieldEntry(card, who, sourceRect, cb, slotOffset, autoPick){
     });
     resolveCaptureWithChoice(card, who, (caps)=>{
       // a same-month tie (2 field candidates) has no single target to land on
-      // up front, so the card lands in the middle of the field while the
-      // player picks (or, for the drawn card, while it's auto-picked); once
-      // resolved, slide it over to stack on the chosen card
+      // up front, so the card lands among the candidates while the player
+      // picks; once picked, slide it over to stack on the chosen card
       if(!targetEl && caps.length===1 && clone){
         const chosenEl = document.querySelector(`#fieldZone .card[data-uid="${caps[0].uid}"]`);
         if(chosenEl){
@@ -1442,7 +1443,7 @@ function playFieldEntry(card, who, sourceRect, cb, slotOffset, autoPick){
         }
       }
       cb({ card, caps, clone, fieldRects, landedRect: toRect });
-    }, autoPick);
+    });
   };
   if(sourceRect){
     // keep the clone at destination size throughout (position-only flight) so the
@@ -1479,12 +1480,9 @@ function playerPlay(uid){
         // the drawn card's own "no match" landing needs to go one slot
         // further along, not the same one
         const slotOffset = pending1.caps.length===0 ? 1 : 0;
-        // the drawn card's own same-month tie (if any) auto-picks rather
-        // than asking the player to choose again right after the hand
-        // card's own tie/match — see resolveCaptureWithChoice
         playFieldEntry(drawn, 'player', deckRect, (pending2)=>{
           finishTurn('player', [pending1, pending2]);
-        }, slotOffset, true);
+        }, slotOffset);
       } else {
         finishTurn('player', [pending1]);
       }
@@ -2029,7 +2027,7 @@ function playCpuHandCard(idx){
         const slotOffset = pending1.caps.length===0 ? 1 : 0;
         playFieldEntry(drawn, 'cpu', deckRect, (pending2)=>{
           finishTurn('cpu', [pending1, pending2]);
-        }, slotOffset, true);
+        }, slotOffset);
       } else {
         finishTurn('cpu', [pending1]);
       }
