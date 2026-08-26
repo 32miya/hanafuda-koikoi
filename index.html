@@ -1326,9 +1326,16 @@ function resolveCaptureWithChoice(card, who, onDone){
    Either way the result is clamped to the actual .card size (58x92): a
    .fieldslot itself is sized to the wider 72x113 grid track, and a real card
    sits at that cell's top-left rather than filling or centering in it. */
-function nextFieldSlotRect(){
+function nextFieldSlotRect(slotOffset){
   const cells = document.querySelectorAll('#fieldZone > *');
-  const idx = state.field.length;
+  // cells.length is the slot count from the *last render* and stays constant
+  // for the whole turn (nothing re-renders mid-turn). state.field.length isn't
+  // reliable here: a capture earlier this same turn already shrank it (cards
+  // spliced out) even though the DOM hasn't caught up yet, which would point
+  // this at a real, still-visible field card instead of an empty slot. Adding
+  // slotOffset lets the second card of a turn land after the first, when the
+  // first already claimed an end slot of its own (see playerPlay/playCpuHandCard).
+  const idx = cells.length + (slotOffset||0);
   const cardW = 58, cardH = 92;
   if(cells[idx]){
     const r = cells[idx].getBoundingClientRect();
@@ -1358,7 +1365,7 @@ function fieldCenterRect(){
    describing what happened, so the caller can batch it with the other card played
    this turn (hand card + drawn card land together, see finishTurn) before anything
    actually leaves the field for the captured pile. */
-function playFieldEntry(card, who, sourceRect, cb){
+function playFieldEntry(card, who, sourceRect, cb, slotOffset){
   const matches = state.field.filter(c=>c.month===card.month);
   const targetEl = matches.length===1
     ? document.querySelector(`#fieldZone .card[data-uid="${matches[0].uid}"]`)
@@ -1369,7 +1376,7 @@ function playFieldEntry(card, who, sourceRect, cb){
   } else if(matches.length===0){
     // no match at all: it's just taking its place in the field row, so land
     // straight on that slot instead of the middle of the field
-    toRect = nextFieldSlotRect() || fieldCenterRect();
+    toRect = nextFieldSlotRect(slotOffset) || fieldCenterRect();
   } else {
     // 2/3-way match still to be resolved: land in the middle of the field
     // until we know whether/where it's actually staying
@@ -1427,9 +1434,13 @@ function playerPlay(uid){
       if(drawn){
         const deckEl = document.getElementById('fieldDeckStack');
         const deckRect = deckEl ? deckEl.getBoundingClientRect() : null;
+        // if the hand card just claimed an end slot of its own (no match),
+        // the drawn card's own "no match" landing needs to go one slot
+        // further along, not the same one
+        const slotOffset = pending1.caps.length===0 ? 1 : 0;
         playFieldEntry(drawn, 'player', deckRect, (pending2)=>{
           finishTurn('player', [pending1, pending2]);
-        });
+        }, slotOffset);
       } else {
         finishTurn('player', [pending1]);
       }
@@ -1971,9 +1982,10 @@ function playCpuHandCard(idx){
       if(drawn){
         const deckEl = document.getElementById('fieldDeckStack');
         const deckRect = deckEl ? deckEl.getBoundingClientRect() : null;
+        const slotOffset = pending1.caps.length===0 ? 1 : 0;
         playFieldEntry(drawn, 'cpu', deckRect, (pending2)=>{
           finishTurn('cpu', [pending1, pending2]);
-        });
+        }, slotOffset);
       } else {
         finishTurn('cpu', [pending1]);
       }
