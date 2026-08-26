@@ -99,6 +99,12 @@
     align-items:flex-end;
   }
   .handrow::-webkit-scrollbar{display:none;}
+  /* opponent's face-down hand is shown purely as a count, not something the
+     player reads card-by-card, so it can run smaller than a real card —
+     freeing that height for #fieldArea (flex:1 1 auto fills whatever the
+     fixed-height rows above and below it give up) */
+  #cpuHand{min-height:50px;}
+  #cpuHand .card{width:42px; height:66px;}
 
   /* ---- field ---- */
   #fieldArea{
@@ -261,8 +267,11 @@
   }
   .btn-koikoi{background:var(--red); color:#fff;}
   .btn-agari{background:#2f5fa6; color:#fff;}
-  .btn-primary{background:#6b3a2a; color:#fff; width:100%;}
-  .modal p{font-size:13px; line-height:1.6;}
+  .btn-primary{
+    background:#6b3a2a; color:#fff; width:100%; margin-top:6px;
+    padding:14px 6px; border-radius:8px; border:none; font-size:16px; font-weight:bold;
+  }
+  .modal p{font-size:15px; line-height:1.6;}
   .modal ul{font-size:12px; line-height:1.5; padding-left:18px;}
   .modal h3{font-size:13px; margin:10px 0 4px;}
 
@@ -1372,6 +1381,23 @@ function fieldCenterRect(){
   return { left: fz.left+fz.width/2-cardW/2, top: fz.top+fz.height/2-cardH/2, width:cardW, height:cardH };
 }
 
+/* where an unresolved 2/3-way match should land while waiting to be
+   resolved: among the actual candidate cards it might match, not the dead
+   center of the whole field — landing in an empty gap unrelated to any real
+   card looks jarring next to real hanafuda, where the card would naturally
+   be held right over the cards it could match. */
+function matchCandidatesRect(matches){
+  const rects = matches
+    .map(m => document.querySelector(`#fieldZone .card[data-uid="${m.uid}"]`))
+    .filter(Boolean)
+    .map(el => el.getBoundingClientRect());
+  if(!rects.length) return null;
+  const cardW = 58, cardH = 92;
+  const cx = rects.reduce((s,r)=>s+r.left+r.width/2, 0) / rects.length;
+  const cy = rects.reduce((s,r)=>s+r.top+r.height/2, 0) / rects.length;
+  return { left: cx-cardW/2, top: cy-cardH/2, width: cardW, height: cardH };
+}
+
 /* fly `card` from sourceRect onto the field (landing on its month-match if there's
    exactly one, otherwise onto the field area) and resolve the real capture logic —
    but don't touch the DOM's field/captured display yet. The card's clone is left
@@ -1392,9 +1418,9 @@ function playFieldEntry(card, who, sourceRect, cb, slotOffset, autoPick){
     // straight on that slot instead of the middle of the field
     toRect = nextFieldSlotRect(slotOffset) || fieldCenterRect();
   } else {
-    // 2/3-way match still to be resolved: land in the middle of the field
+    // 2/3-way match still to be resolved: land among the candidate cards
     // until we know whether/where it's actually staying
-    toRect = fieldCenterRect();
+    toRect = matchCandidatesRect(matches) || fieldCenterRect();
   }
   const land = (clone)=>{
     const fieldRects = {};
