@@ -1336,13 +1336,18 @@ function resolveCaptureWithChoice(card, who, onDone){
    one.
    render() only ever pads the grid with spare .fieldslot placeholders up to
    8 cards (`Math.max(8, sortedField.length)`), so once the field already has
-   8+ cards there's no rendered slot to read a rect from — the next slot has
-   to be extrapolated from the existing grid's column/row pitch instead.
-   Either way the result is clamped to the actual .card size (58x92): a
-   .fieldslot itself is sized to the wider 72x113 grid track, and a real card
-   sits at that cell's top-left rather than filling or centering in it. */
+   8+ cards there's no rendered slot to read a rect from for the next one.
+   Rather than re-deriving the grid's row/column math by hand, temporarily
+   append real .fieldslot elements so CSS Grid lays out the extra row itself
+   (exactly as the eventual real render() will) and reuse that position —
+   scrolling #fieldZone to bring it into view first if it isn't already,
+   since the flying clone is appended to <body> and isn't clipped by
+   #fieldZone's own scroll area, so an off-screen position here would land it
+   wherever that page coordinate happens to be (e.g. over the yaku bar). The
+   temporary elements are removed again immediately, before anything paints. */
 function nextFieldSlotRect(slotOffset){
-  const cells = document.querySelectorAll('#fieldZone > *');
+  const fieldZoneEl = document.getElementById('fieldZone');
+  const cells = fieldZoneEl.children;
   // cells.length is the slot count from the *last render* and stays constant
   // for the whole turn (nothing re-renders mid-turn). state.field.length isn't
   // reliable here: a capture earlier this same turn already shrank it (cards
@@ -1357,22 +1362,24 @@ function nextFieldSlotRect(slotOffset){
     return { left:r.left, top:r.top, width:cardW, height:cardH };
   }
   if(!cells.length) return null;
-  const cols = 4;
-  const first = cells[0].getBoundingClientRect();
-  const colPitch = cells.length>1 ? (cells[1].getBoundingClientRect().left - first.left) || cardW : cardW;
-  const rowPitch = cells.length>cols ? (cells[cols].getBoundingClientRect().top - first.top) || cardH : cardH;
-  const row = Math.floor(idx/cols), col = idx%cols;
-  const top = first.top+row*rowPitch;
-  // #fieldZone scrolls internally once it's full (overflow-y:auto), so a row
-  // extrapolated far enough down (a long game with few captures keeps growing
-  // the field) can fall outside its visible viewport entirely — the clone is
-  // appended to <body>, not clipped by that scroll area, so an unclamped
-  // position here would land it wherever that happens to be on the page
-  // (e.g. over the yaku bar or the captured pile below the field). Bail out
-  // to the center-of-field fallback once the target would be off-screen.
-  const fz = document.getElementById('fieldZone').getBoundingClientRect();
-  if(top+cardH > fz.top+fz.height) return null;
-  return { left: first.left+col*colPitch, top, width: cardW, height: cardH };
+  const temps = [];
+  for(let i=cells.length; i<=idx; i++){
+    const t = document.createElement('div');
+    t.className = 'fieldslot';
+    fieldZoneEl.appendChild(t);
+    temps.push(t);
+  }
+  const target = temps[temps.length-1];
+  let r = target.getBoundingClientRect();
+  const fz = fieldZoneEl.getBoundingClientRect();
+  const overflow = (r.top+cardH) - (fz.top+fz.height);
+  if(overflow > 0){
+    fieldZoneEl.scrollTop += overflow;
+    r = target.getBoundingClientRect();
+  }
+  const rect = { left:r.left, top:r.top, width:cardW, height:cardH };
+  temps.forEach(t=>t.remove());
+  return rect;
 }
 
 function fieldCenterRect(){
