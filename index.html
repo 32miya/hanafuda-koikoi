@@ -1347,7 +1347,17 @@ function nextFieldSlotRect(slotOffset){
   const colPitch = cells.length>1 ? (cells[1].getBoundingClientRect().left - first.left) || cardW : cardW;
   const rowPitch = cells.length>cols ? (cells[cols].getBoundingClientRect().top - first.top) || cardH : cardH;
   const row = Math.floor(idx/cols), col = idx%cols;
-  return { left: first.left+col*colPitch, top: first.top+row*rowPitch, width: cardW, height: cardH };
+  const top = first.top+row*rowPitch;
+  // #fieldZone scrolls internally once it's full (overflow-y:auto), so a row
+  // extrapolated far enough down (a long game with few captures keeps growing
+  // the field) can fall outside its visible viewport entirely — the clone is
+  // appended to <body>, not clipped by that scroll area, so an unclamped
+  // position here would land it wherever that happens to be on the page
+  // (e.g. over the yaku bar or the captured pile below the field). Bail out
+  // to the center-of-field fallback once the target would be off-screen.
+  const fz = document.getElementById('fieldZone').getBoundingClientRect();
+  if(top+cardH > fz.top+fz.height) return null;
+  return { left: first.left+col*colPitch, top, width: cardW, height: cardH };
 }
 
 function fieldCenterRect(){
