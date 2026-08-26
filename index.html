@@ -1311,17 +1311,36 @@ function resolveCaptureWithChoice(card, who, onDone){
   }
 }
 
-/* where `card` will land in the sorted field row if it doesn't match anything —
-   mirrors render()'s `[...state.field, card].sort((a,b)=>a.month-b.month)` so the
-   flight target is exactly the grid slot it's about to settle into. Reads the
-   rect off the already-rendered card/fieldslot currently sitting at that slot
-   index, so it stays correct across every viewport/breakpoint. Returns null if
-   the field has grown past its currently-rendered slot count (rare). */
-function predictFieldSlotRect(card){
-  const withNew = [...state.field, card].sort((a,b)=>a.month-b.month);
-  const idx = withNew.findIndex(c=>c.uid===card.uid);
-  const slotEl = document.querySelectorAll('#fieldZone > *')[idx];
-  return slotEl ? slotEl.getBoundingClientRect() : null;
+/* where `card` should land in the field row if it doesn't match anything: the
+   next open slot after all the field's current cards. Landing on its eventual
+   sorted position instead could put it right on top of a card that's already
+   there (hidden underneath until the final re-sort), which both hides that
+   card and makes it impossible to tell whether the next card drawn from the
+   deck matches anything. The final render() re-sorts everyone into place
+   anyway, so the landing spot only needs to be an empty one, not the "correct"
+   one.
+   render() only ever pads the grid with spare .fieldslot placeholders up to
+   8 cards (`Math.max(8, sortedField.length)`), so once the field already has
+   8+ cards there's no rendered slot to read a rect from — the next slot has
+   to be extrapolated from the existing grid's column/row pitch instead.
+   Either way the result is clamped to the actual .card size (58x92): a
+   .fieldslot itself is sized to the wider 72x113 grid track, and a real card
+   sits at that cell's top-left rather than filling or centering in it. */
+function nextFieldSlotRect(){
+  const cells = document.querySelectorAll('#fieldZone > *');
+  const idx = state.field.length;
+  const cardW = 58, cardH = 92;
+  if(cells[idx]){
+    const r = cells[idx].getBoundingClientRect();
+    return { left:r.left, top:r.top, width:cardW, height:cardH };
+  }
+  if(!cells.length) return null;
+  const cols = 4;
+  const first = cells[0].getBoundingClientRect();
+  const colPitch = cells.length>1 ? (cells[1].getBoundingClientRect().left - first.left) || cardW : cardW;
+  const rowPitch = cells.length>cols ? (cells[cols].getBoundingClientRect().top - first.top) || cardH : cardH;
+  const row = Math.floor(idx/cols), col = idx%cols;
+  return { left: first.left+col*colPitch, top: first.top+row*rowPitch, width: cardW, height: cardH };
 }
 
 function fieldCenterRect(){
@@ -1350,7 +1369,7 @@ function playFieldEntry(card, who, sourceRect, cb){
   } else if(matches.length===0){
     // no match at all: it's just taking its place in the field row, so land
     // straight on that slot instead of the middle of the field
-    toRect = predictFieldSlotRect(card) || fieldCenterRect();
+    toRect = nextFieldSlotRect() || fieldCenterRect();
   } else {
     // 2/3-way match still to be resolved: land in the middle of the field
     // until we know whether/where it's actually staying
