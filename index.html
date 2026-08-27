@@ -1414,7 +1414,17 @@ function matchCandidatesRect(matches){
    describing what happened, so the caller can batch it with the other card played
    this turn (hand card + drawn card land together, see finishTurn) before anything
    actually leaves the field for the captured pile. */
-function playFieldEntry(card, who, sourceRect, cb, slotOffset){
+function playFieldEntry(card, who, sourceRect, cb, slotOffset, fromDeck){
+  // online host: tell the guest what just landed/got captured, in the same
+  // moment the host itself knows it, so the guest can replay the same flight
+  // locally instead of only ever seeing the final snapshot after the fact
+  const notifyAndCb = (pending)=>{
+    if(onlineMode==='host'){
+      netSend({ t:'event', kind:'cardPlay', who: who==='player' ? 'cpu' : 'player',
+        card, capUids: pending.caps.map(c=>c.uid), fromDeck: !!fromDeck });
+    }
+    cb(pending);
+  };
   const matches = state.field.filter(c=>c.month===card.month);
   const targetEl = matches.length===1
     ? document.querySelector(`#fieldZone .card[data-uid="${matches[0].uid}"]`)
@@ -1444,12 +1454,12 @@ function playFieldEntry(card, who, sourceRect, cb, slotOffset){
         const chosenEl = document.querySelector(`#fieldZone .card[data-uid="${caps[0].uid}"]`);
         if(chosenEl){
           restackClone(clone, chosenEl.getBoundingClientRect()).then(()=>{
-            cb({ card, caps, clone, fieldRects, landedRect: toRect });
+            notifyAndCb({ card, caps, clone, fieldRects, landedRect: toRect });
           });
           return;
         }
       }
-      cb({ card, caps, clone, fieldRects, landedRect: toRect });
+      notifyAndCb({ card, caps, clone, fieldRects, landedRect: toRect });
     });
   };
   if(sourceRect){
@@ -1489,7 +1499,7 @@ function playerPlay(uid){
         const slotOffset = pending1.caps.length===0 ? 1 : 0;
         playFieldEntry(drawn, 'player', deckRect, (pending2)=>{
           finishTurn('player', [pending1, pending2]);
-        }, slotOffset);
+        }, slotOffset, true);
       } else {
         finishTurn('player', [pending1]);
       }
@@ -2034,7 +2044,7 @@ function playCpuHandCard(idx){
         const slotOffset = pending1.caps.length===0 ? 1 : 0;
         playFieldEntry(drawn, 'cpu', deckRect, (pending2)=>{
           finishTurn('cpu', [pending1, pending2]);
-        }, slotOffset);
+        }, slotOffset, true);
       } else {
         finishTurn('cpu', [pending1]);
       }
@@ -2088,7 +2098,7 @@ function onHandCardTap(uid){
   if(state.busy || state.turn!=='player' || state.roundOver || state.pendingChoice) return;
   if(selectedUid === uid){
     selectedUid = null;
-    if(onlineMode==='guest'){ playClick(); netSend({t:'action', kind:'playCard', uid}); state.busy = true; render(); return; }
+    if(onlineMode==='guest'){ playClick(); cacheSelfPlayRect(uid); netSend({t:'action', kind:'playCard', uid}); state.busy = true; render(); return; }
     playerPlay(uid);
   } else {
     selectedUid = uid;
@@ -2148,7 +2158,7 @@ function render(){
     fieldEl.querySelectorAll('.card').forEach(el=>{
       el.onclick = ()=>{
         const u=selectedUid; selectedUid=null;
-        if(onlineMode==='guest'){ playClick(); netSend({t:'action', kind:'playCard', uid:u}); state.busy=true; render(); return; }
+        if(onlineMode==='guest'){ playClick(); cacheSelfPlayRect(u); netSend({t:'action', kind:'playCard', uid:u}); state.busy=true; render(); return; }
         playerPlay(u);
       };
     });
@@ -2424,6 +2434,9 @@ fetchPlayerIdentity();
    see stateForGuest()) and forwards taps as network actions. */
 let onlineMode = null; // null | 'host' | 'guest'
 const Net = { peer:null, conn:null, opponentIdentity:{name:null, avatar:null} };
+// guest-side card-flight animation bookkeeping (see guestAnimateCardPlay)
+let guestSelfPlayRect = null;
+let guestFlyClones = [];
 
 function netSend(obj){
   if(Net.conn && Net.conn.open) Net.conn.send(obj);
@@ -2449,12 +2462,40 @@ const PEER_ERROR_MESSAGES = {
 };
 function peerErrorMessage(err){ return PEER_ERROR_MESSAGES[err.type] || ('接続エラー：'+err.type); }
 
+/* STUN alone can't traverse carrier-grade / symmetric NAT, which is the
+   common case when either side is on mobile data - the connection either
+   never finishes negotiating or drops the instant it "opens". A TURN relay
+   is the only fix for that. openrelay.metered.ca is a free, keyless public
+   demo TURN server (no SLA, rate-limited) - fine for making P2P actually
+   work most of the time; swap in a personal Metered/Twilio/Cloudflare TURN
+   credential (or a self-hosted coturn) if this needs to be reliable at scale. */
+const ICE_CONFIG = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  ]
+};
+
+/* the signaling websocket to the PeerServer broker can drop on its own
+   (independent of the RTC data connection) - especially on flaky mobile
+   data - leaving the peer registered as 'disconnected' without ever firing
+   an 'error'. Without this, a room code silently stops being reachable. */
+function attachSignalingReconnect(peer){
+  peer.on('disconnected', ()=>{
+    if(!peer.destroyed) peer.reconnect();
+  });
+}
+
 function netCreateRoom(attempt){
   attempt = attempt || 0;
   document.getElementById('hostStatusText').textContent = attempt ? '再試行中…' : '接続準備中…';
   document.getElementById('hostCodeBox').style.display = 'none';
-  const peer = new Peer(generateRoomCode());
+  const peer = new Peer(generateRoomCode(), { config: ICE_CONFIG });
   Net.peer = peer;
+  attachSignalingReconnect(peer);
   peer.on('open', id=>{
     document.getElementById('hostCodeText').textContent = id;
     document.getElementById('hostCodeBox').style.display = '';
@@ -2482,8 +2523,9 @@ function netCreateRoom(attempt){
 
 function netJoinRoom(code){
   document.getElementById('joinStatusText').textContent = '接続中…';
-  const peer = new Peer();
+  const peer = new Peer(undefined, { config: ICE_CONFIG });
   Net.peer = peer;
+  attachSignalingReconnect(peer);
   peer.on('open', ()=>{
     const conn = peer.connect(code, {reliable:true});
     Net.conn = conn; onlineMode = 'guest';
@@ -2540,6 +2582,10 @@ function netHandleMessage(msg){
     return;
   }
   if(msg.t==='state'){
+    // any card-flight clones from an in-progress cardPlay animation are now
+    // superseded by the authoritative layout about to be rendered
+    guestFlyClones.forEach(el=>{ try{ el.remove(); }catch(e){} });
+    guestFlyClones = [];
     state = msg.state;
     if(msg.scores){
       if(scores.player!==msg.scores.player) addScore('player', msg.scores.player-scores.player);
@@ -2588,7 +2634,71 @@ function guestHandleEvent(msg){
     flashToast(msg.msg);
   } else if(msg.kind==='roundEnd'){
     showMessage(msg.msg, ()=>{});
+  } else if(msg.kind==='cardPlay'){
+    guestAnimateCardPlay(msg);
   }
+}
+
+function cacheSelfPlayRect(uid){
+  const el = document.querySelector(`#playerHand .card[data-uid="${uid}"]`);
+  guestSelfPlayRect = el ? el.getBoundingClientRect() : null;
+}
+
+/* Mirrors playFieldEntry()+finishTurn()'s visual flight on the guest side,
+   driven by the host's narrated 'cardPlay' event instead of local game logic
+   (the guest never runs real game logic, see the top of this section). Fires
+   once per phase (hand card, then the drawn card) - see notifyAndCb() inside
+   playFieldEntry(). `who` here is already flipped to the guest's own
+   perspective (the same flip stateForGuest() applies to the state itself),
+   so 'player' means "my own card" and 'cpu' means "the opponent's card". */
+function guestAnimateCardPlay(msg){
+  const { who, card, capUids, fromDeck } = msg;
+  let sourceRect = null;
+  if(fromDeck){
+    const deckEl = document.getElementById('fieldDeckStack');
+    sourceRect = deckEl ? deckEl.getBoundingClientRect() : null;
+  } else if(who==='player'){
+    sourceRect = guestSelfPlayRect;
+    guestSelfPlayRect = null;
+    if(!sourceRect){
+      const handEl = document.getElementById('playerHand');
+      sourceRect = handEl ? handEl.getBoundingClientRect() : null;
+    }
+  } else {
+    const cpuHandEl = document.getElementById('cpuHand');
+    sourceRect = cpuHandEl ? cpuHandEl.getBoundingClientRect() : null;
+  }
+  const capturedEl = capUids.length ? document.querySelector(`#fieldZone .card[data-uid="${capUids[0]}"]`) : null;
+  const toRect = capturedEl ? capturedEl.getBoundingClientRect() : (nextFieldSlotRect(guestFlyClones.length) || fieldCenterRect());
+  if(!toRect) return;
+
+  const finishLanding = (landedClone)=>{
+    if(capUids.length===0){
+      if(landedClone) guestFlyClones.push(landedClone);
+      return;
+    }
+    const fieldRects = {};
+    document.querySelectorAll('#fieldZone .card[data-uid]').forEach(el=>{
+      fieldRects[el.dataset.uid] = el.getBoundingClientRect();
+    });
+    const stackRect = capStackRect(who);
+    if(!stackRect){ if(landedClone) landedClone.remove(); return; }
+    const flights = [flyCard(cardInnerHTML(card), 'mini', landedClone ? landedClone.getBoundingClientRect() : toRect, stackRect, { destWidth:34, destHeight:53 })];
+    capUids.forEach(uid=>{
+      const c = state.field.find(x=>x.uid===uid);
+      if(c) flights.push(flyCard(cardInnerHTML(c), 'mini', fieldRects[uid] || toRect, stackRect, { destWidth:34, destHeight:53 }));
+    });
+    if(landedClone) landedClone.remove();
+    Promise.all(flights).then(playCardWhoosh);
+  };
+
+  if(!sourceRect){ finishLanding(null); return; }
+  const fromNorm = {
+    left: sourceRect.left + sourceRect.width/2 - toRect.width/2,
+    top: sourceRect.top + sourceRect.height/2 - toRect.height/2,
+    width: toRect.width, height: toRect.height
+  };
+  flyCard(cardInnerHTML(card), null, fromNorm, toRect, { onArrive: playThwack, stackOffset: !!capturedEl, keepEl: true }).then(finishLanding);
 }
 
 /* ---- title screen navigation ---- */
