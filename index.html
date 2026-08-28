@@ -572,8 +572,8 @@
       <button id="titleBackBtn">タイトルへ</button>
     </div>
     <div class="playerbadge">
-      <div class="info" style="text-align:right"><div class="pname">あなた<span id="streakBadge" class="streak-badge" style="display:none"></span></div><div class="bigscore" id="playerTotal">0</div></div>
-      <div class="avatar">You</div>
+      <div class="info" style="text-align:right"><div class="pname"><span id="playerNameText">あなた</span><span id="streakBadge" class="streak-badge" style="display:none"></span></div><div class="bigscore" id="playerTotal">0</div></div>
+      <div class="avatar" id="playerAvatar">You</div>
     </div>
   </div>
 
@@ -2412,17 +2412,23 @@ async function fetchPlayerIdentity(){
   }
 }
 
+function applyAvatarInto(el, avatarUrl){
+  if (!el || !avatarUrl) return;
+  el.innerHTML = `<img src="${avatarUrl}" alt="" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">`;
+}
+
 function updateIdentityUI(){
   if (!myIdentity.name) return;
   const nameEl = document.getElementById('onlinePlayerName');
   const iconEl = document.getElementById('onlinePlayerIcon');
   nameEl.textContent = myIdentity.name;
-  if (myIdentity.avatar){
-    iconEl.innerHTML = `<img src="${myIdentity.avatar}" alt="" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">`;
-  }
-  // also reflect it on the "あなた" badge in-game once a real name is known
-  const pname = document.querySelector('.playerbadge:last-child .pname');
-  if (pname) pname.textContent = myIdentity.name;
+  applyAvatarInto(iconEl, myIdentity.avatar);
+  // also reflect it on the "あなた" badge in-game once a real name is known -
+  // target the dedicated text span, not the whole .pname div, so the
+  // sibling #streakBadge (win-streak indicator) doesn't get wiped out
+  const nameSpan = document.getElementById('playerNameText');
+  if (nameSpan) nameSpan.textContent = myIdentity.name;
+  applyAvatarInto(document.getElementById('playerAvatar'), myIdentity.avatar);
 }
 fetchPlayerIdentity();
 
