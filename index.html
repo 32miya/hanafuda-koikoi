@@ -2731,6 +2731,11 @@ document.querySelectorAll('.diff-btn').forEach(btn=>{
     addScore('player',0); addScore('cpu',0);
     roundFirstPlayer = 'player';
     newRound('player');
+    // the identity fetch is async and single-player can reach the game
+    // screen fast enough to beat it - apply it now if it already landed,
+    // and if not, retry so it still shows up instead of staying "You"
+    if(myIdentity.name) updateIdentityUI();
+    else fetchPlayerIdentity();
   };
 });
 function resetOnlinePanels(){
@@ -2745,7 +2750,8 @@ document.getElementById('btnOnlinePlay').onclick = ()=>{
   document.getElementById('titleScreen').style.display = 'none';
   document.getElementById('onlineScreen').style.display = '';
   resetOnlinePanels();
-  updateIdentityUI();
+  if(myIdentity.name) updateIdentityUI();
+  else fetchPlayerIdentity();
 };
 document.getElementById('btnOnlineBack').onclick = ()=>{
   playClick();
